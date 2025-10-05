@@ -322,15 +322,17 @@ class BlockedOperatorFactory : public Operator::PlanNodeTranslator {
 std::unique_ptr<VectorSerde::Options> getVectorSerdeOptions(
     common::CompressionKind compressionKind,
     const std::string& kind,
-    std::optional<float> minCompressionRatio = std::nullopt);
+    std::optional<float> minCompressionRatio = std::nullopt,
+    bool exchangeChecksum = false);
 
 #ifdef VELOX_ENABLE_BACKWARD_COMPATIBILITY
 inline std::unique_ptr<VectorSerde::Options> getVectorSerdeOptions(
     common::CompressionKind compressionKind,
     VectorSerde::Kind kind,
-    std::optional<float> minCompressionRatio = std::nullopt) {
+    std::optional<float> minCompressionRatio = std::nullopt,
+    bool exchangeChecksum = false) {
   return getVectorSerdeOptions(
-      compressionKind, VectorSerde::kindName(kind), minCompressionRatio);
+      compressionKind, VectorSerde::kindName(kind), minCompressionRatio, exchangeChecksum);
 }
 #endif
 
