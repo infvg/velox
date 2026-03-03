@@ -117,10 +117,13 @@ const std::shared_ptr<const TypeWithId>& TypeWithId::childByFieldId(
     uint32_t fieldId) const {
   std::vector<std::string> childNames;
   std::vector<TypePtr> childTypes;
-  for (auto& child : children_) {
+  for (int i = 0; i < children_.size(); ++i) {
+    auto& child = children_[i];
     if (fieldId == child->id()) {
       return child;
-    } else if (fieldId > child->id() && fieldId <= child->maxId()) {
+    } else if (
+        child->size() > 0 && fieldId > child->id() &&
+        (i == children_.size() - 1 || fieldId < children_[i + 1]->id())) {
       return child->childByFieldId(fieldId);
     }
   }

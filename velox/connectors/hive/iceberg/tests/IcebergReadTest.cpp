@@ -26,6 +26,7 @@
 #include "velox/connectors/hive/iceberg/IcebergSplit.h"
 #include "velox/connectors/hive/iceberg/tests/IcebergTestBase.h"
 #include "velox/dwio/common/tests/utils/DataFiles.h"
+#include "velox/dwio/parquet/writer/Writer.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
@@ -72,6 +73,28 @@ class HiveIcebergTest : public HiveConnectorTestBase {
     flushPolicyFactory_ = []() {
       return std::make_unique<dwrf::LambdaFlushPolicy>([]() { return true; });
     };
+  }
+
+  void writeToParquetFile(
+      const std::string& path,
+      const std::vector<RowVectorPtr>& data,
+      velox::parquet::WriterOptions options) {
+    VELOX_CHECK_GT(data.size(), 0);
+
+    auto writeFile = std::make_unique<LocalWriteFile>(path, true, false);
+    auto sink = std::make_unique<dwio::common::WriteFileSink>(
+        std::move(writeFile), path);
+    auto childPool =
+        rootPool_->addAggregateChild("IcebergReadTest.Writer");
+    options.memoryPool = childPool.get();
+
+    auto writer = std::make_unique<velox::parquet::Writer>(
+        std::move(sink), options, asRowType(data[0]->type()));
+
+    for (const auto& vector : data) {
+      writer->write(vector);
+    }
+    writer->close();
   }
 
   /// Create 1 base data file data_file_1 with 2 RowGroups of 10000 rows each.
@@ -1502,5 +1525,64 @@ TEST_F(HiveIcebergTest, equalityDeleteSubField) {
   duckDbSql = "SELECT c_bigint FROM tmp WHERE c_row.c0 not in (1, 2)";
   assertEqualityDeletes(
       icebergSplits.back(), ROW({"c_bigint"}, {BIGINT()}), duckDbSql);
+}
+
+TEST_F(HiveIcebergTest, equalityDeleteWithParquetFormat) {
+  folly::SingletonVault::singleton()->registrationComplete();
+
+  // This file has total 3 row groups. Column '_5' has min/max values:
+  // [200, 299], [0, 99], [100, 199] in each row group.
+  auto dataFilePath = getDataFilePath(
+      "velox/connectors/hive/iceberg/test", "examples/three_groups.parquet");
+
+  // Create equality delete file that deletes rows with _5 values [0, 110)
+  std::vector<int64_t> deleteValues;
+  for (int64_t i = 0; i < 110; ++i) {
+    deleteValues.push_back(i);
+  }
+
+  auto deleteFilePath = TempFilePath::create();
+  velox::parquet::WriterOptions options;
+  writeToParquetFile(
+      deleteFilePath->getPath(),
+      {makeRowVector({"_5"}, {makeFlatVector<int64_t>(deleteValues)})},
+      options);
+
+  // Create equality delete file with field id 5 (the "_5" column)
+  std::vector<int32_t> equalityFieldIds = {5};
+  IcebergDeleteFile icebergDeleteFile(
+      FileContent::kEqualityDeletes,
+      deleteFilePath->getPath(),
+      dwio::common::FileFormat::PARQUET,
+      deleteValues.size(),
+      testing::internal::GetFileSize(
+          std::fopen(deleteFilePath->getPath().c_str(), "r")),
+      equalityFieldIds);
+
+  auto fileSize = filesystems::getFileSystem(dataFilePath, nullptr)
+                      ->openFileForRead(dataFilePath)
+                      ->size();
+
+  std::unordered_map<std::string, std::string> customSplitInfo{
+      {"table_format", "hive-iceberg"}};
+  std::unordered_map<std::string, std::optional<std::string>> partitionKeys;
+  auto split = std::make_shared<HiveIcebergSplit>(
+      kHiveConnectorId,
+      dataFilePath,
+      dwio::common::FileFormat::PARQUET,
+      0,
+      fileSize,
+      partitionKeys,
+      std::nullopt,
+      customSplitInfo,
+      nullptr,
+      /*cacheable=*/true,
+      std::vector<IcebergDeleteFile>{icebergDeleteFile});
+
+  // Rows with Column '_5' between 0 - 109 will be deleted.
+  assertEqualityDeletes(
+      split,
+      ROW({"_5"}, {BIGINT()}),
+      "SELECT i AS _5 FROM range(110, 300) AS t(i)");
 }
 } // namespace facebook::velox::connector::hive::iceberg
