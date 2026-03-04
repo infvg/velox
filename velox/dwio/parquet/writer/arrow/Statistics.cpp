@@ -641,7 +641,8 @@ class TypedStatisticsImpl : public TypedStatistics<DType> {
     if (!encodedMax.empty()) {
       plainDecode(encodedMax, &max_);
     }
-    hasMinMax_ = hasMinMax;
+
+    hasMinMax_ = hasMinMax && !encodedMin.empty() && !encodedMax.empty();
   }
 
   bool hasDistinctCount() const override {
