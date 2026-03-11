@@ -91,16 +91,17 @@ void DataFileStatsCollector::collectStats(
       }
       dataFileStats->nullValueCounts[fieldId] += columnChunkStats->nullCount();
 
-      if (columnChunkStats->hasMinMax() &&
-          !skipBoundsFields.contains(fieldId)) {
-        if (globalMaxStats.find(fieldId) == globalMaxStats.end()) {
-          globalMinStats[fieldId] = columnChunkStats;
-          globalMaxStats[fieldId] = columnChunkStats;
-        } else {
-          globalMaxStats[fieldId] = arrow::Statistics::CompareAndGetMax(
-              globalMaxStats[fieldId], columnChunkStats);
-          globalMinStats[fieldId] = arrow::Statistics::CompareAndGetMin(
-              globalMinStats[fieldId], columnChunkStats);
+      if (!skipBoundsFields.contains(fieldId)) {
+        if (columnChunkStats->hasMinMax()) {
+          if (globalMaxStats.find(fieldId) == globalMaxStats.end()) {
+            globalMinStats[fieldId] = columnChunkStats;
+            globalMaxStats[fieldId] = columnChunkStats;
+          } else {
+            globalMaxStats[fieldId] = arrow::Statistics::CompareAndGetMax(
+                globalMaxStats[fieldId], columnChunkStats);
+            globalMinStats[fieldId] = arrow::Statistics::CompareAndGetMin(
+                globalMinStats[fieldId], columnChunkStats);
+          }
         }
       }
     }
