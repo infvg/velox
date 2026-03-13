@@ -712,12 +712,9 @@ void exportValidityBitmap(
     gatherFromBuffer(*BOOLEAN(), *vec.nulls(), rows, options, *nulls);
   }
 
-  // Set null counts.
-  if (!rows.changed() && (vec.getNullCount() != std::nullopt)) {
-    out.null_count = *vec.getNullCount();
-  } else {
-    out.null_count = BaseVector::countNulls(nulls, rows.count());
-  }
+  // Always count nulls from the buffer to ensure accuracy, especially with
+  // large datasets where cached null counts may be stale or incorrect.
+  out.null_count = BaseVector::countNulls(nulls, rows.count());
 
   if (out.null_count > 0) {
     holder.setBuffer(0, nulls);
