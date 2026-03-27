@@ -15,10 +15,8 @@
  */
 
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h"
-
-#include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AbfsConfig.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsUtil.h"
-#include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
 
 namespace facebook::velox::filesystems {
 
@@ -90,9 +88,8 @@ class AbfsWriteFile::Impl {
 AbfsWriteFile::AbfsWriteFile(
     std::string_view path,
     const config::ConfigBase& config) {
-  const auto abfsPath = std::make_shared<AbfsPath>(path);
-  auto client =
-      AzureClientProviderFactories::getWriteFileClient(abfsPath, config);
+  auto abfsConfig = AbfsConfig(path, config);
+  auto client = abfsConfig.getWriteFileClient();
   impl_ = std::make_unique<Impl>(path, client);
 }
 

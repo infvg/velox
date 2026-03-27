@@ -24,12 +24,8 @@
 #include "velox/common/file/File.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/connectors/hive/FileHandle.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AbfsConfig.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsFileSystem.h"
-#include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
-
-#include "connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
-#include "connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
-#include "connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 #include "velox/common/testutil/TempFilePath.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsReadFile.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h"
@@ -44,33 +40,7 @@ using namespace facebook::velox::filesystems;
 using namespace facebook::velox::common::testutil;
 using ::facebook::velox::common::Region;
 
-namespace {
-
 constexpr int kOneMB = 1 << 20;
-
-class TestAzureClientProvider final : public AzureClientProvider {
- public:
-  explicit TestAzureClientProvider() {
-    delegated_ = std::make_unique<SharedKeyAzureClientProvider>();
-  }
-
-  std::unique_ptr<AzureBlobClient> getReadFileClient(
-      const std::shared_ptr<AbfsPath>& path,
-      const config::ConfigBase& config) override {
-    return delegated_->getReadFileClient(path, config);
-  }
-
-  std::unique_ptr<AzureDataLakeFileClient> getWriteFileClient(
-      const std::shared_ptr<AbfsPath>& path,
-      const config::ConfigBase& config) override {
-    return std::make_unique<MockDataLakeFileClient>();
-  }
-
- private:
-  std::unique_ptr<AzureClientProvider> delegated_;
-};
-
-} // namespace
 
 class AbfsFileSystemTest : public testing::Test {
  public:
@@ -79,9 +49,12 @@ class AbfsFileSystemTest : public testing::Test {
 
   static void SetUpTestCase() {
     registerAbfsFileSystem();
-    registerAzureClientProviderFactory("test", [](const std::string&) {
-      return std::make_unique<TestAzureClientProvider>();
-    });
+    AbfsConfig::setUpTestWriteClient(
+        []() { return std::make_unique<MockDataLakeFileClient>(); });
+  }
+
+  static void TearDownTestSuite() {
+    AbfsConfig::tearDownTestWriteClient();
   }
 
   void SetUp() override {
@@ -293,12 +266,12 @@ TEST_F(AbfsFileSystemTest, notImplemented) {
   VELOX_ASSERT_THROW(abfs_->rmdir("dir"), "rmdir for abfs not implemented");
 }
 
-TEST_F(AbfsFileSystemTest, clientProviderFactoryNotRegistered) {
+TEST_F(AbfsFileSystemTest, credNotFOund) {
   const std::string abfsFile =
       std::string("abfs://test@test1.dfs.core.windows.net/test");
   VELOX_ASSERT_THROW(
       abfs_->openFileForRead(abfsFile),
-      "No AzureClientProviderFactory registered for account 'test1'.");
+      "Config fs.azure.account.key.test1.dfs.core.windows.net not found");
 }
 
 TEST_F(AbfsFileSystemTest, registerAbfsFileSink) {
@@ -317,104 +290,4 @@ TEST_F(AbfsFileSystemTest, registerAbfsFileSink) {
     auto abfsWriteFile = dynamic_cast<AbfsWriteFile*>(writeFile.get());
     ASSERT_TRUE(abfsWriteFile != nullptr);
   }
-}
-
-class AbfsFileSystemClientProviderTest : public AbfsFileSystemTest {
- public:
-  static void SetUpTestCase() {
-    registerAbfsFileSystem();
-  }
-
-  void SetUp() override {
-    auto port = facebook::velox::exec::test::getFreePort();
-    azuriteServer_ = std::make_shared<AzuriteServer>(port);
-    azuriteServer_->start();
-  }
-};
-
-TEST_F(AbfsFileSystemClientProviderTest, sharedKey) {
-  const std::unordered_map<std::string, std::string> config(
-      {{"fs.azure.account.auth.type.efg.dfs.core.windows.net", "SharedKey"},
-       {"fs.azure.blob-endpoint", "https://efg.blob.core.windows.net"},
-       {"fs.azure.account.key.efg.dfs.core.windows.net", "efg"}});
-  auto hiveConfig = azuriteServer_->hiveConfig(config);
-  abfs_ = std::make_unique<AbfsFileSystem>(hiveConfig);
-  const auto factory = AzureClientProviderFactories::getClientFactory("efg");
-  const auto clientProvider = factory("efg");
-  const auto sharedKeyAzureClientProvider =
-      dynamic_cast<SharedKeyAzureClientProvider*>(clientProvider.get());
-  VELOX_CHECK_NOT_NULL(sharedKeyAzureClientProvider);
-  const auto readClient = sharedKeyAzureClientProvider->getReadFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@efg.dfs.core.windows.net/file/read.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      readClient->getUrl(),
-      "https://efg.blob.core.windows.net/abc/file/read.txt");
-  const auto writeClient = sharedKeyAzureClientProvider->getWriteFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@efg.dfs.core.windows.net/file/write.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      writeClient->getUrl(),
-      "https://efg.blob.core.windows.net/abc/file/write.txt");
-}
-
-TEST_F(AbfsFileSystemClientProviderTest, clientSecretOAuth) {
-  const std::unordered_map<std::string, std::string> config({
-      {"fs.azure.account.auth.type.efg.dfs.core.windows.net", "OAuth"},
-      {"fs.azure.account.oauth2.client.id.efg.dfs.core.windows.net", "test"},
-      {"fs.azure.account.oauth2.client.secret.efg.dfs.core.windows.net",
-       "test"},
-      {"fs.azure.account.oauth2.client.endpoint.efg.dfs.core.windows.net",
-       "https://login.microsoftonline.com/{TENANTID}/oauth2/token"},
-  });
-  auto hiveConfig = azuriteServer_->hiveConfig(config);
-  abfs_ = std::make_unique<AbfsFileSystem>(hiveConfig);
-  const auto factory = AzureClientProviderFactories::getClientFactory("efg");
-  const auto clientProvider = factory("efg");
-  const auto oAuthAzureClientProvider =
-      dynamic_cast<OAuthAzureClientProvider*>(clientProvider.get());
-  VELOX_CHECK_NOT_NULL(oAuthAzureClientProvider);
-  const auto readClient = oAuthAzureClientProvider->getReadFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@efg.dfs.core.windows.net/file/read.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      readClient->getUrl(),
-      "https://efg.blob.core.windows.net/abc/file/read.txt");
-  const auto writeClient = oAuthAzureClientProvider->getWriteFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@efg.dfs.core.windows.net/file/write.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      writeClient->getUrl(),
-      "https://efg.blob.core.windows.net/abc/file/write.txt");
-}
-
-TEST_F(AbfsFileSystemClientProviderTest, fixedSasToken) {
-  const std::unordered_map<std::string, std::string> config(
-      {{"fs.azure.account.auth.type.bar.dfs.core.windows.net", "SAS"},
-       {"fs.azure.sas.fixed.token.bar.dfs.core.windows.net", "sas=test"}});
-  auto hiveConfig = azuriteServer_->hiveConfig(config);
-  abfs_ = std::make_unique<AbfsFileSystem>(hiveConfig);
-  const auto factory = AzureClientProviderFactories::getClientFactory("bar");
-  const auto clientProvider = factory("bar");
-  const auto fixedSasAzureClientProvider =
-      dynamic_cast<FixedSasAzureClientProvider*>(clientProvider.get());
-  VELOX_CHECK_NOT_NULL(fixedSasAzureClientProvider);
-  const auto readClient = fixedSasAzureClientProvider->getReadFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@bar.dfs.core.windows.net/read.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      readClient->getUrl(),
-      "https://bar.blob.core.windows.net/abc/read.txt?sas=test");
-  const auto writeClient = fixedSasAzureClientProvider->getReadFileClient(
-      std::make_shared<AbfsPath>(
-          "abfss://abc@bar.dfs.core.windows.net/write.txt"),
-      *hiveConfig);
-  ASSERT_EQ(
-      writeClient->getUrl(),
-      "https://bar.blob.core.windows.net/abc/write.txt?sas=test");
 }

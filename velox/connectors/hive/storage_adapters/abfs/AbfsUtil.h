@@ -26,16 +26,6 @@ constexpr std::string_view kAbfsScheme{"abfs://"};
 constexpr std::string_view kAbfssScheme{"abfss://"};
 } // namespace
 
-class ConfigBase;
-
-struct CacheKey {
-  const std::string accountName;
-  const std::string authType;
-
-  CacheKey(std::string_view accountName, std::string_view authType)
-      : accountName(accountName), authType(authType) {}
-};
-
 inline bool isAbfsFile(const std::string_view filename) {
   return filename.find(kAbfsScheme) == 0 || filename.find(kAbfssScheme) == 0;
 }
@@ -54,8 +44,5 @@ inline std::string throwStorageExceptionWithOperationDetails(
   }
   VELOX_FAIL(errMsg);
 }
-
-std::vector<CacheKey> extractCacheKeyFromConfig(
-    const config::ConfigBase& config);
 
 } // namespace facebook::velox::filesystems

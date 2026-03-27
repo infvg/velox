@@ -15,10 +15,7 @@
 add_executable(
   velox_abfs_test
   AbfsFileSystemTest.cpp
-  AbfsUtilTest.cpp
-  AzureClientProvidersTest.cpp
-  AzureClientProviderFactoriesTest.cpp
-  DynamicSasTokenClientProviderTest.cpp
+  AbfsCommonTest.cpp
   AzuriteServer.cpp
   MockDataLakeFileClient.cpp
 )

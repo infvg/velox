@@ -20,19 +20,16 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <glog/logging.h>
 
-#include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AbfsConfig.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsReadFile.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsUtil.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h"
-#include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
-#include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 
 namespace facebook::velox::filesystems {
 
 AbfsFileSystem::AbfsFileSystem(std::shared_ptr<const config::ConfigBase> config)
     : FileSystem(config) {
   VELOX_CHECK_NOT_NULL(config.get());
-  registerAzureClientProvider(*config_);
 }
 
 std::string AbfsFileSystem::name() const {

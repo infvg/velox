@@ -19,15 +19,7 @@ velox_add_library(velox_abfs RegisterAbfsFileSystem.cpp)
 if(VELOX_ENABLE_ABFS)
   velox_sources(
     velox_abfs
-    PRIVATE
-      AbfsFileSystem.cpp
-      AbfsPath.cpp
-      AbfsReadFile.cpp
-      AbfsUtil.cpp
-      AbfsWriteFile.cpp
-      AzureClientProviderFactories.cpp
-      AzureClientProviderImpl.cpp
-      DynamicSasTokenClientProvider.cpp
+    PRIVATE AbfsFileSystem.cpp AbfsConfig.cpp AbfsReadFile.cpp AbfsWriteFile.cpp
   )
 
   velox_link_libraries(
