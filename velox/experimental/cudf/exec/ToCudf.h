@@ -16,10 +16,50 @@
 
 #pragma once
 
+#include "velox/experimental/cudf-exchange/CudfExchangeClient.h"
+
 #include "velox/exec/Driver.h"
 #include "velox/exec/Operator.h"
 
 namespace facebook::velox::cudf_velox {
+
+static const std::string kCudfAdapterName = "cuDF";
+
+// QueryConfig key. Enable or disable cudf in task level.
+static const std::string kCudfEnabled = "cudf.enabled";
+
+struct TaskPipelineKey {
+  std::string taskId;
+  int pipelineId;
+
+  TaskPipelineKey(const std::string& tid, int pid)
+      : taskId(tid), pipelineId(pid) {}
+
+  // need equality operator for unordered map.
+  bool operator==(const TaskPipelineKey& other) const {
+    return taskId == other.taskId && pipelineId == other.pipelineId;
+  }
+
+  // Need a hash functor for the unordered map.
+  struct Hash {
+    std::size_t operator()(const TaskPipelineKey& key) const {
+      std::hash<std::string> hasher;
+      std::size_t h1 = hasher(key.taskId);
+      std::size_t h2 = std::hash<int>{}(key.pipelineId);
+      return h1 ^ (h2 << 1); // simple combination of the two hash functions.
+    }
+  };
+};
+
+// Map to store CudfExchangeClient instances by task and pipeline.
+// Defined in OperatorAdapters.cpp to ensure a single instance across all
+// translation units.
+using CudfExchangeClientMap = std::unordered_map<
+    TaskPipelineKey,
+    std::weak_ptr<cudf_exchange::CudfExchangeClient>,
+    TaskPipelineKey::Hash>;
+
+CudfExchangeClientMap& getCudfExchangeClientMap();
 
 class CompileState {
  public:

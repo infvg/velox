@@ -882,8 +882,7 @@ class QueryConfig {
     ENABLED_FOR_ALL = 2,
   };
 
-  static constexpr const char* kExchangeChecksum =
-      "exchange_checksum";
+  static constexpr const char* kExchangeChecksum = "exchange_checksum";
 
   bool selectiveNimbleReaderEnabled() const {
     return get<bool>(kSelectiveNimbleReaderEnabled, true);

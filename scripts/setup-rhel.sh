@@ -37,6 +37,7 @@ EXTRA_ARROW_OPTIONS=${EXTRA_ARROW_OPTIONS:-""}
 USE_CLANG="${USE_CLANG:-false}"
 export INSTALL_PREFIX=${INSTALL_PREFIX:-"/usr/local"}
 DEPENDENCY_DIR=${DEPENDENCY_DIR:-$(pwd)/deps-download}
+VELOX_DNF=${VELOX_DNF:-dnf}
 
 FB_ZSTD_VERSION="1.5.6"
 DBL_CONVERSION_VERSION="v3.3.0"
@@ -49,8 +50,8 @@ RE2_VERSION="2023-03-01"
 XXHASH_VERSION="0.8.2"
 GOOGLETEST_VERSION="1.11.0"
 C_ARES_VERSION="v1.34.5"
-VELOX_UCX_VERSION=${UCX_VERSION:-"1.19.0"}
-VELOX_CUDA_VERSION=${CUDA_VERSION:-"12.8"}
+VELOX_UCX_VERSION=${UCX_VERSION:-"1.19.1"}
+VELOX_CUDA_VERSION=${CUDA_VERSION:-"13.0"}
 
 function dnf_install {
   dnf install -y -q --setopt=install_weak_deps=False "$@"
@@ -89,8 +90,21 @@ function install_gflags {
 
 function install_cuda {
   # See https://developer.nvidia.com/cuda-downloads
-  dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+  local arch
+  arch="$(uname -m)"
+  local repo_url
   version="${1:-$VELOX_CUDA_VERSION}"
+
+  if [[ $arch == "x86_64" ]]; then
+    repo_url="https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"
+  elif [[ $arch == "aarch64" ]]; then
+    repo_url="https://developer.download.nvidia.com/compute/cuda/repos/rhel9/sbsa/cuda-rhel9.repo"
+  else
+    echo "Unsupported architecture: $arch" >&2
+    return 1
+  fi
+
+  dnf config-manager --add-repo "$repo_url"
   local dashed="$(echo "$version" | tr '.' '-')"
   dnf install -y \
     cuda-compat-$dashed \
@@ -101,6 +115,36 @@ function install_cuda {
     cuda-nvml-devel-$dashed \
     libcufile-devel-$dashed \
     numactl-libs
+}
+
+function install_cuda_runtime {
+  # Installs only CUDA runtime libraries (no -devel packages)
+  # For use in runtime containers that don't need headers/static libs
+  local arch
+  arch="$(uname -m)"
+  local repo_url
+  version="${1:-$VELOX_CUDA_VERSION}"
+
+  if [[ $arch == "x86_64" ]]; then
+    repo_url="https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"
+  elif [[ $arch == "aarch64" ]]; then
+    repo_url="https://developer.download.nvidia.com/compute/cuda/repos/rhel9/sbsa/cuda-rhel9.repo"
+  else
+    echo "Unsupported architecture: $arch" >&2
+    return 1
+  fi
+
+  curl "$repo_url" -o /etc/yum.repos.d/cuda-rhel9.repo
+  local dashed
+  dashed="$(echo "$version" | tr '.' '-')"
+
+  # Runtime-only packages (no -devel, no build tools)
+  ${VELOX_DNF} install -y \
+    cuda-cudart-"$dashed" \
+    cuda-compat-"$dashed" \
+    libcufile-"$dashed" \
+    cuda-nvrtc-"$dashed" \
+    libnvjitlink-"$dashed"
 }
 
 function install_re2 {

@@ -41,10 +41,57 @@
 #include <cudf/strings/split/split.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/transform.hpp>
+#include <cudf/strings/convert/convert_datetime.hpp>
+#include <cudf/strings/convert/convert_integers.hpp>
 #include <cudf/unary.hpp>
 
 namespace facebook::velox::cudf_velox {
 namespace {
+
+// Translates Presto MySQL-style date format to cuDF strftime-style.
+// Returns std::nullopt if format contains specifiers unsupported by cuDF
+// (including name-dependent specifiers that require a non-empty names column).
+static std::optional<std::string> prestoToCudfDateFormat(
+    const std::string& prestoFormat) {
+  std::string result;
+  result.reserve(prestoFormat.size() * 2);
+  for (size_t i = 0; i < prestoFormat.size(); ++i) {
+    if (prestoFormat[i] != '%') {
+      result += prestoFormat[i];
+      continue;
+    }
+    if (i + 1 >= prestoFormat.size()) {
+      return std::nullopt; // Trailing %
+    }
+    ++i;
+    switch (prestoFormat[i]) {
+      // Direct matches (cuDF has same specifier and meaning):
+      case 'Y': case 'y': case 'm': case 'd':
+      case 'H': case 'I': case 'S': case 'f':
+      case 'j':
+        result += '%';
+        result += prestoFormat[i];
+        break;
+      // Translations (same meaning, different specifier):
+      case 'i': result += "%M"; break; // Presto minutes -> cuDF minutes
+      case 's': result += "%S"; break; // Presto seconds (lowercase alias)
+      case 'h': result += "%I"; break; // Presto 12h hour alias
+      // Composite expansion:
+      case 'T': result += "%H:%M:%S"; break; // 24h time
+      // Literal percent:
+      case '%': result += "%%"; break;
+      // Unsupported — name-dependent specifiers (crash with empty names):
+      // Presto %M (month name), %W (weekday name), %a, %b, %p, %r
+      // Unsupported — no cuDF equivalent for unpadded variants:
+      // Presto %c (month unpadded), %e (day unpadded), %k, %l
+      // Unsupported — ISO week specifiers (deferred):
+      // Presto %v (ISO week), %x (ISO week year)
+      default:
+        return std::nullopt;
+    }
+  }
+  return result;
+}
 
 struct CudfExpressionEvaluatorEntry {
   int priority;
@@ -178,6 +225,12 @@ class SplitFunction : public CudfFunction {
 
 class CastFunction : public CudfFunction {
  public:
+  enum class CastMode {
+    kFixedWidth, // cudf::cast() for fixed-width <-> fixed-width
+    kDateToString, // cudf::strings::from_timestamps() with "%Y-%m-%d"
+    kIntToString, // cudf::strings::from_integers()
+  };
+
   CastFunction(const std::shared_ptr<velox::exec::Expr>& expr) {
     VELOX_CHECK_EQ(expr->inputs().size(), 1, "cast expects exactly 1 input");
 
@@ -185,11 +238,28 @@ class CastFunction : public CudfFunction {
         cudf::data_type(cudf_velox::veloxToCudfTypeId(expr->type()));
     auto sourceType = cudf::data_type(
         cudf_velox::veloxToCudfTypeId(expr->inputs()[0]->type()));
-    VELOX_CHECK(
-        cudf::is_supported_cast(sourceType, targetCudfType_),
-        "Cast from {} to {} is not supported",
-        expr->inputs()[0]->type()->toString(),
-        expr->type()->toString());
+
+    const auto& srcVeloxType = expr->inputs()[0]->type();
+    const auto& dstVeloxType = expr->type();
+
+    if (srcVeloxType->isDate() &&
+        dstVeloxType->kind() == TypeKind::VARCHAR) {
+      castMode_ = CastMode::kDateToString;
+    } else if (
+        (srcVeloxType->kind() == TypeKind::TINYINT ||
+         srcVeloxType->kind() == TypeKind::SMALLINT ||
+         srcVeloxType->kind() == TypeKind::INTEGER ||
+         srcVeloxType->kind() == TypeKind::BIGINT) &&
+        dstVeloxType->kind() == TypeKind::VARCHAR) {
+      castMode_ = CastMode::kIntToString;
+    } else {
+      castMode_ = CastMode::kFixedWidth;
+      VELOX_CHECK(
+          cudf::is_supported_cast(sourceType, targetCudfType_),
+          "Cast from {} to {} is not supported",
+          expr->inputs()[0]->type()->toString(),
+          expr->type()->toString());
+    }
   }
 
   ColumnOrView eval(
@@ -197,11 +267,74 @@ class CastFunction : public CudfFunction {
       rmm::cuda_stream_view stream,
       rmm::device_async_resource_ref mr) const override {
     auto inputCol = asView(inputColumns[0]);
-    return cudf::cast(inputCol, targetCudfType_, stream, mr);
+    switch (castMode_) {
+      case CastMode::kDateToString:
+        // Presto DATE->VARCHAR produces ISO 8601: "YYYY-MM-DD"
+        // cuDF from_timestamps with "%Y-%m-%d" matches exactly.
+        return cudf::strings::from_timestamps(
+            inputCol,
+            "%Y-%m-%d",
+            cudf::strings_column_view(cudf::column_view{
+                cudf::data_type{cudf::type_id::STRING},
+                0,
+                nullptr,
+                nullptr,
+                0}),
+            stream,
+            mr);
+      case CastMode::kIntToString:
+        return cudf::strings::from_integers(inputCol, stream, mr);
+      default:
+        return cudf::cast(inputCol, targetCudfType_, stream, mr);
+    }
   }
 
  private:
   cudf::data_type targetCudfType_;
+  CastMode castMode_{CastMode::kFixedWidth};
+};
+
+class DateFormatFunction : public CudfFunction {
+ public:
+  DateFormatFunction(const std::shared_ptr<velox::exec::Expr>& expr) {
+    using velox::exec::ConstantExpr;
+    VELOX_CHECK_EQ(
+        expr->inputs().size(), 2, "date_format expects exactly 2 inputs");
+
+    auto formatExpr =
+        std::dynamic_pointer_cast<ConstantExpr>(expr->inputs()[1]);
+    VELOX_CHECK_NOT_NULL(
+        formatExpr, "date_format format string must be a constant");
+    auto prestoFormat = formatExpr->value()->toString(0);
+
+    auto cudfFormat = prestoToCudfDateFormat(prestoFormat);
+    VELOX_CHECK(
+        cudfFormat.has_value(),
+        "date_format: unsupported format specifier in '{}'",
+        prestoFormat);
+    cudfFormat_ = std::move(cudfFormat.value());
+  }
+
+  ColumnOrView eval(
+      std::vector<ColumnOrView>& inputColumns,
+      rmm::cuda_stream_view stream,
+      rmm::device_async_resource_ref mr) const override {
+    auto inputCol = asView(inputColumns[0]);
+    return cudf::strings::from_timestamps(
+        inputCol,
+        cudfFormat_,
+        cudf::strings_column_view(cudf::column_view{
+            cudf::data_type{cudf::type_id::STRING},
+            0,
+            nullptr,
+            nullptr,
+            0}),
+        stream,
+        mr);
+  }
+
+ private:
+  std::string cudfFormat_;
 };
 
 // Spark date_add function implementation.
@@ -1042,6 +1175,40 @@ bool registerBuiltinFunctions(const std::string& prefix) {
   } else {
     registerPrestoFunctions(prefix);
   }
+  
+  registerCudfFunction(
+      prefix + "date_add",
+      [](const std::string&, const std::shared_ptr<velox::exec::Expr>& expr) {
+        return std::make_shared<DateAddFunction>(expr);
+      },
+      {FunctionSignatureBuilder()
+           .returnType("date")
+           .argumentType("date")
+           .constantArgumentType("tinyint")
+           .build(),
+       FunctionSignatureBuilder()
+           .returnType("date")
+           .argumentType("date")
+           .constantArgumentType("smallint")
+           .build(),
+       FunctionSignatureBuilder()
+           .returnType("date")
+           .argumentType("date")
+           .constantArgumentType("integer")
+           .build()});
+
+  registerCudfFunction(
+      prefix + "date_format",
+      [](const std::string&,
+         const std::shared_ptr<velox::exec::Expr>& expr) {
+        return std::make_shared<DateFormatFunction>(expr);
+      },
+      {FunctionSignatureBuilder()
+           .returnType("varchar")
+           .argumentType("timestamp")
+           .constantArgumentType("varchar")
+           .build()});
+
   return true;
 }
 
@@ -1126,7 +1293,23 @@ bool FunctionExpression::canEvaluate(std::shared_ptr<velox::exec::Expr> expr) {
     }
     auto src = cudf::data_type(cudf_velox::veloxToCudfTypeId(srcType));
     auto dst = cudf::data_type(cudf_velox::veloxToCudfTypeId(dstType));
-    return cudf::is_supported_cast(src, dst);
+    if (cudf::is_supported_cast(src, dst)) {
+      return true;
+    }
+    // DATE -> VARCHAR via cudf::strings::from_timestamps with "%Y-%m-%d".
+    // Both cast and try_cast are safe (from_timestamps always succeeds on
+    // valid timestamp data, and propagates NULLs).
+    if (srcType->isDate() && dstType->kind() == TypeKind::VARCHAR) {
+      return true;
+    }
+    // Integer types -> VARCHAR via cudf::strings::from_integers.
+    auto srcKind = srcType->kind();
+    if ((srcKind == TypeKind::TINYINT || srcKind == TypeKind::SMALLINT ||
+         srcKind == TypeKind::INTEGER || srcKind == TypeKind::BIGINT) &&
+        dstType->kind() == TypeKind::VARCHAR) {
+      return true;
+    }
+    return false;
   }
 
   auto& registry = getCudfFunctionRegistry();
@@ -1135,7 +1318,22 @@ bool FunctionExpression::canEvaluate(std::shared_ptr<velox::exec::Expr> expr) {
     return false;
   }
   const auto& spec = it->second;
-  return matchCallAgainstSignatures(*expr, spec.signatures);
+  if (!matchCallAgainstSignatures(*expr, spec.signatures)) {
+    return false;
+  }
+  // For date_format, validate the format string is translatable to cuDF.
+  // This ensures unsupported format specifiers fall back to CPU gracefully
+  // rather than crashing in the DateFormatFunction constructor.
+  if (opName == "date_format" && expr->inputs().size() == 2) {
+    auto formatExpr = std::dynamic_pointer_cast<velox::exec::ConstantExpr>(
+        expr->inputs()[1]);
+    if (!formatExpr) {
+      return false;
+    }
+    return prestoToCudfDateFormat(formatExpr->value()->toString(0))
+        .has_value();
+  }
+  return true;
 }
 
 bool canBeEvaluatedByCudf(std::shared_ptr<velox::exec::Expr> expr, bool deep) {

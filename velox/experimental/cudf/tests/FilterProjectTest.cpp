@@ -1200,4 +1200,299 @@ TEST_F(CudfSimpleFilterProjectTest, castToSmallInt) {
   EXPECT_EQ(tryCast, -214);
 }
 
+TEST_F(CudfSimpleFilterProjectTest, castDateToVarchar) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(parseDate("2024-03-15")));
+  EXPECT_EQ(result, "2024-03-15");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castDateToVarcharEpoch) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(parseDate("1970-01-01")));
+  EXPECT_EQ(result, "1970-01-01");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castDateToVarcharYear0001) {
+  // SAP null date — cuDF %Y zero-pads to 4 digits
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(parseDate("0001-01-01")));
+  EXPECT_EQ(result, "0001-01-01");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castDateToVarcharPreEpoch) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(parseDate("1920-01-02")));
+  EXPECT_EQ(result, "1920-01-02");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castDateToVarcharNull) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(std::nullopt));
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(CudfSimpleFilterProjectTest, tryCastDateToVarchar) {
+  // try_cast should also work (from_timestamps always succeeds)
+  auto result = evaluateOnce<std::string>(
+      "try_cast(c0 as varchar)",
+      {DATE()},
+      std::optional<int32_t>(parseDate("2024-03-15")));
+  EXPECT_EQ(result, "2024-03-15");
+}
+
+// INTEGER/BIGINT → VARCHAR cast tests.
+// Needed for SAP time columns (ERZET, LFUHR, etc.) stored as INTEGER
+// in INT tables, cast to VARCHAR in view definitions.
+
+TEST_F(CudfSimpleFilterProjectTest, castIntToVarchar) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)", std::optional<int32_t>(12345));
+  EXPECT_EQ(result, "12345");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castIntToVarcharNegative) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)", std::optional<int32_t>(-100));
+  EXPECT_EQ(result, "-100");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castIntToVarcharZero) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)", std::optional<int32_t>(0));
+  EXPECT_EQ(result, "0");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castIntToVarcharNull) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)", std::optional<int32_t>(std::nullopt));
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castBigintToVarchar) {
+  auto result = evaluateOnce<std::string>(
+      "cast(c0 as varchar)", std::optional<int64_t>(9876543210LL));
+  EXPECT_EQ(result, "9876543210");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, tryCastIntToVarchar) {
+  auto result = evaluateOnce<std::string>(
+      "try_cast(c0 as varchar)", std::optional<int32_t>(42));
+  EXPECT_EQ(result, "42");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castSmallintToVarchar) {
+  auto result = evaluateOnce<std::string, int16_t>(
+      "cast(c0 as varchar)", std::optional<int16_t>(255));
+  EXPECT_EQ(result, "255");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, castTinyintToVarchar) {
+  auto result = evaluateOnce<std::string, int8_t>(
+      "cast(c0 as varchar)", std::optional<int8_t>(127));
+  EXPECT_EQ(result, "127");
+}
+
+// date_format tests — GPU path for Patch 1.
+// Only format specifiers supported by cuDF are tested here.
+// Unsupported specifiers (%M month name, %W weekday, %a, %b, %p, %r,
+// %c, %e, %k, %l, %v, %x) fall back to CPU.
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatYmd) {
+  // %Y%m%d — the SAP YYYYMMDD use case (Query 2's format)
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y%m%d')",
+      std::optional<Timestamp>(parseTimestamp("2024-03-15")));
+  EXPECT_EQ(result, "20240315");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatIso) {
+  // ISO date with dashes
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y-%m-%d')",
+      std::optional<Timestamp>(parseTimestamp("1970-01-01")));
+  EXPECT_EQ(result, "1970-01-01");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatYearZeroPad) {
+  // Verify %Y zero-pads to 4 digits for years < 1000.
+  // Note: year 0001 (SAP null date) can't be tested here because Timestamp
+  // uses nanoseconds which overflow for dates before ~1677. For 0001-01-01,
+  // use CAST(date AS varchar) instead (Query 1 pattern).
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y%m%d')",
+      std::optional<Timestamp>(parseTimestamp("1900-01-01")));
+  EXPECT_EQ(result, "19000101");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatWithTime) {
+  // %H:%i:%S — Presto %i (minutes) must translate to cuDF %M
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y-%m-%d %H:%i:%S')",
+      std::optional<Timestamp>(Timestamp(0, 0)));
+  EXPECT_EQ(result, "1970-01-01 00:00:00");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatFullDateTime) {
+  // Full datetime with all supported time components
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y-%m-%d %H:%i:%s')",
+      std::optional<Timestamp>(parseTimestamp("2000-02-29 13:45:30")));
+  EXPECT_EQ(result, "2000-02-29 13:45:30");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormat24hTime) {
+  // %T composite — expands to %H:%M:%S in cuDF
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%T')",
+      std::optional<Timestamp>(parseTimestamp("2022-01-01 23:59:59")));
+  EXPECT_EQ(result, "23:59:59");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormat12hHour) {
+  // %h and %I — 12-hour zero-padded hour
+  auto resultH = evaluateOnce<std::string>(
+      "date_format(c0, '%h')",
+      std::optional<Timestamp>(parseTimestamp("2022-01-01 14:00:00")));
+  EXPECT_EQ(resultH, "02");
+
+  auto resultI = evaluateOnce<std::string>(
+      "date_format(c0, '%I')",
+      std::optional<Timestamp>(parseTimestamp("2022-01-01 14:00:00")));
+  EXPECT_EQ(resultI, "02");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatDayOfYear) {
+  // %j — day of year, zero-padded to 3 digits
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%j')",
+      std::optional<Timestamp>(parseTimestamp("2022-12-31")));
+  EXPECT_EQ(result, "365");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatTwoDigitYear) {
+  // %y — 2-digit year
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%y')",
+      std::optional<Timestamp>(parseTimestamp("2024-06-15")));
+  EXPECT_EQ(result, "24");
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatNull) {
+  // NULL propagation — cuDF copies bitmask from input
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '%Y%m%d')",
+      std::optional<Timestamp>(std::nullopt));
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(CudfSimpleFilterProjectTest, dateFormatLiteralPercent) {
+  // %% — literal percent sign
+  auto result = evaluateOnce<std::string>(
+      "date_format(c0, '100%%')",
+      std::optional<Timestamp>(parseTimestamp("2024-01-01")));
+  EXPECT_EQ(result, "100%");
+}
+
+// End-to-end test for Query 2's date_format CASE WHEN pattern on the GPU.
+// Original query (Snowflake-to-Presto rewrite):
+//   SELECT CASE WHEN date_format(CAST(tddat AS timestamp), '%Y%m%d') = '00010101'
+//               THEN '00000000'
+//               ELSE date_format(CAST(tddat AS timestamp), '%Y%m%d')
+//          END AS tddat
+//   FROM s3_erpams_vbep LIMIT 1;
+// End-to-end test for Query 2's date_format CASE WHEN pattern on the GPU.
+// Note: 0001-01-01 (SAP null date) is NOT included because CAST(date AS
+// timestamp) overflows — Timestamp uses nanoseconds (int64 range ~1677-2262).
+// For 0001-01-01 handling, use Query 1's CAST(date AS varchar) pattern instead.
+TEST_F(CudfFilterProjectTest, dateFormatQuery2Pattern) {
+  auto dates = makeNullableFlatVector<int32_t>(
+      {DATE()->toDays("2024-03-15"),  // normal date
+       DATE()->toDays("1970-01-01"),  // epoch
+       DATE()->toDays("2027-10-18"),  // far future
+       std::nullopt},                  // NULL — should propagate
+      DATE());
+  auto plan =
+      PlanBuilder()
+          .values({makeRowVector({dates})})
+          .project(
+              {"CASE WHEN date_format(cast(c0 as timestamp), '%Y%m%d') = '19700101'"
+               " THEN '00000000'"
+               " ELSE date_format(cast(c0 as timestamp), '%Y%m%d')"
+               " END AS result"})
+          .planNode();
+  auto result = AssertQueryBuilder(plan).copyResults(pool());
+
+  auto expected = makeRowVector({
+      makeNullableFlatVector<StringView>({
+          "20240315"_sv,  // normal date passthrough
+          "00000000"_sv,  // epoch matched → replaced
+          "20271018"_sv,  // far future passthrough
+          std::nullopt,   // NULL propagation
+      }),
+  });
+  facebook::velox::test::assertEqualVectors(expected, result);
+}
+
+// End-to-end test for Query 1's CASE WHEN pattern on the cuDF GPU path.
+// Original query:
+//   SELECT 1 FROM s3_erpams_vbep
+//   GROUP BY CASE WHEN CAST(tddat AS varchar) = '00010101'
+//                 THEN '00000000'
+//                 ELSE CAST(tddat AS varchar)
+//            END
+//   LIMIT 1;
+//
+// Note: Presto's CAST(date AS varchar) produces ISO 8601 'YYYY-MM-DD' (with
+// dashes), so the comparison literal uses dashes. The original query compared
+// against '00010101' (dashless) which is a semantic mismatch — it would never
+// match. This test uses the correct Presto semantics.
+TEST_F(CudfFilterProjectTest, castDateToVarcharQuery1Pattern) {
+  // End-to-end test for Query 1's CASE WHEN pattern:
+  //   CASE WHEN CAST(tddat AS varchar) = '0001-01-01'
+  //        THEN '00000000'
+  //        ELSE CAST(tddat AS varchar)
+  //   END
+  // Note: Presto CAST(date AS varchar) produces ISO 8601 'YYYY-MM-DD' (with
+  // dashes), so the comparison literal uses dashes. The original query compared
+  // against '00010101' (dashless) which is a semantic mismatch.
+  auto dates = makeNullableFlatVector<int32_t>(
+      {DATE()->toDays("0001-01-01"),  // SAP null date — should match
+       DATE()->toDays("2024-03-15"),  // normal date — should not match
+       DATE()->toDays("1970-01-01"),  // epoch — should not match
+       DATE()->toDays("2027-10-18"), // far future — should not match
+       std::nullopt},                 // NULL — should propagate as NULL
+      DATE());
+  auto plan =
+      PlanBuilder()
+          .values({makeRowVector({dates})})
+          .project(
+              {"CASE WHEN cast(c0 as varchar) = '0001-01-01'"
+               " THEN '00000000'"
+               " ELSE cast(c0 as varchar)"
+               " END AS result"})
+          .planNode();
+  auto result = AssertQueryBuilder(plan).copyResults(pool());
+
+  auto expected = makeRowVector({
+      makeNullableFlatVector<StringView>({
+          "00000000"_sv,   // 0001-01-01 matched → replaced
+          "2024-03-15"_sv, // normal date passthrough
+          "1970-01-01"_sv, // epoch passthrough
+          "2027-10-18"_sv, // far future passthrough
+          std::nullopt,    // NULL propagation
+      }),
+  });
+  facebook::velox::test::assertEqualVectors(expected, result);
+}
+
 } // namespace

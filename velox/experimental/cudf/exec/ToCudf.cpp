@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "velox/experimental/cudf-exchange/CudfExchangeClient.h"
+#include "velox/experimental/cudf-exchange/CudfPartitionedOutput.h"
 #include "velox/experimental/cudf/CudfConfig.h"
 #include "velox/experimental/cudf/exec/CudfConversion.h"
 #include "velox/experimental/cudf/exec/CudfHashAggregation.h"
@@ -21,6 +23,7 @@
 #include "velox/experimental/cudf/exec/CudfOperator.h"
 #include "velox/experimental/cudf/exec/CudfOrderBy.h"
 #include "velox/experimental/cudf/exec/CudfTopN.h"
+#include "velox/experimental/cudf/exec/CudfTopNRowNumber.h"
 #include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/exec/OperatorAdapters.h"
 #include "velox/experimental/cudf/exec/ToCudf.h"
@@ -40,6 +43,12 @@
 #include <iostream>
 
 static const std::string kCudfAdapterName = "cuDF";
+DEFINE_bool(velox_cudf_enabled, true, "Enable cuDF-Velox acceleration");
+DEFINE_string(velox_cudf_memory_resource, "async", "Memory resource for cuDF");
+DEFINE_bool(velox_cudf_debug, false, "Enable debug printing");
+DEFINE_bool(velox_cudf_exchange, true, "Enable cuDF exchange");
+
+using namespace facebook::velox::cudf_exchange;
 
 namespace facebook::velox::cudf_velox {
 
@@ -267,6 +276,7 @@ bool CompileState::compile(bool allowCpuFallback) {
     }
   }
 
+  VLOG(3) << "- CompileState::compile";
   return replacementsMade;
 }
 
@@ -391,6 +401,10 @@ void CudfConfig::initialize(
     concatOptimizationEnabled =
         folly::to<bool>(config[kCudfConcatOptimizationEnabled]);
   }
+  if (config.find(kCudfPartitionedOutputBatchRows) != config.end()) {
+    partitionedOutputBatchRows =
+        folly::to<int32_t>(config[kCudfPartitionedOutputBatchRows]);
+  }
   if (config.find(kCudfFunctionNamePrefix) != config.end()) {
     functionNamePrefix = config[kCudfFunctionNamePrefix];
   }
@@ -410,11 +424,31 @@ void CudfConfig::initialize(
   if (config.find(kCudfLogFallback) != config.end()) {
     logFallback = folly::to<bool>(config[kCudfLogFallback]);
   }
+
   if (config.find(kCudfTopNBatchSize) != config.end()) {
     topNBatchSize = folly::to<int32_t>(config[kCudfTopNBatchSize]);
   }
   if (config.find(kCudfFunctionEngine) != config.end()) {
     functionEngine = config[kCudfFunctionEngine];
+  }
+
+  if (config.find(kCudfExchange) != config.end()) {
+    exchange = folly::to<bool>(config[kCudfExchange]);
+  }
+  if (config.find(kCudfServerPort) != config.end()) {
+    exchangePort = folly::to<uint16_t>(config[kCudfServerPort]);
+  }
+  if (config.find(kCudfIntraNodeExchange) != config.end()) {
+    intraNodeExchange = folly::to<bool>(config[kCudfIntraNodeExchange]);
+  }
+  if (config.find(kUcxxErrorHandling) != config.end()) {
+    ucxxErrorHandling = folly::to<bool>(config[kUcxxErrorHandling]);
+  }
+  if (config.find(kUcxxBlockingPolling) != config.end()) {
+    ucxxBlockingPolling = folly::to<bool>(config[kUcxxBlockingPolling]);
+  }
+  if (config.find(kCudfExchangeLogLevel) != config.end()) {
+    exchangeLogLevel = folly::to<int32_t>(config[kCudfExchangeLogLevel]);
   }
 }
 

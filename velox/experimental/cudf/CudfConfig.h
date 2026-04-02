@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -47,11 +48,25 @@ struct CudfConfig {
       "cudf.batch_size_max_threshold"};
   static constexpr const char* kCudfConcatOptimizationEnabled{
       "cudf.concat_optimization_enabled"};
+  /// Minimum number of rows to accumulate in CudfPartitionedOutput before
+  /// flushing. Small inputs are buffered and concatenated into a single merged
+  /// table when this threshold is reached, avoiding pathologically small
+  /// exchange chunks. Set to 0 to disable accumulation.
+  static constexpr const char* kCudfPartitionedOutputBatchRows{
+      "cudf.partitioned_output_batch_rows"};
   // The value could be either spark or presto.
   static constexpr const char* kCudfFunctionEngine{"cudf.function_engine"};
 
   /// Query session configs for the cuDF Operators.
   static constexpr const char* kCudfTopNBatchSize{"cudf.topk_batch_size"};
+
+  static constexpr const char* kCudfExchange{"cudf.exchange"};
+  static constexpr const char* kCudfServerPort{"cudf.exchange.server.port"};
+  static constexpr const char* kUcxxErrorHandling{"ucxx.error_handling"};
+  static constexpr const char* kCudfIntraNodeExchange{
+      "cudf.intra_node_exchange"};
+  static constexpr const char* kUcxxBlockingPolling{"ucxx.blocking_polling"};
+  static constexpr const char* kCudfExchangeLogLevel{"cudf.exchange_log_level"};
 
   /// Singleton CudfConfig instance.
   /// Clients must set the configs below before invoking registerCudf().
@@ -62,7 +77,7 @@ struct CudfConfig {
 
   /// Enable cudf by default.
   /// Clients can disable here and enable it via the QueryConfig as well.
-  bool enabled{true};
+  bool enabled{false};
 
   /// Enable debug printing.
   bool debugEnabled{false};
@@ -120,6 +135,8 @@ struct CudfConfig {
   /// `CudfBatchConcat` (default 100k).
   int32_t batchSizeMinThreshold{100000};
 
+  int32_t partitionedOutputBatchRows{10000};
+
   /// Maximum rows allowed in a concatenated batch (user configurable).
   /// When not set, cuDF's own `size_type::max()` is used.
   std::optional<int32_t> batchSizeMaxThreshold;
@@ -129,6 +146,25 @@ struct CudfConfig {
   // Register the Spark or Presto functions, the value could be either spark or
   // presto.
   std::string functionEngine{"presto"};
+
+  /// Whether cudf exchange is enabled.
+  bool exchange{false};
+
+  uint16_t exchangePort;
+
+  /// Whether to enable error handling in UCXX endpoints.
+  bool ucxxErrorHandling{true};
+
+  /// Whether intra-node exchange optimization is enabled.
+  /// When disabled, all transfers use UCXX even within the same node.
+  bool intraNodeExchange{false};
+
+  /// Whether to use blocking polling in UCXX.
+  bool ucxxBlockingPolling{true};
+
+  /// VLOG level for cudf-exchange source files (0 = silent, 1-3 = increasing
+  /// verbosity). Applied via google::SetVLOGLevel when Communicator starts.
+  int32_t exchangeLogLevel{0};
 };
 
 } // namespace facebook::velox::cudf_velox
