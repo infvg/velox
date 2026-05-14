@@ -2153,36 +2153,68 @@ TEST(IcebergStatistics, unboundedUpperBound) {
 }
 
 TEST(IcebergStatistics, maxValueWithNulls) {
-  const NodePtr node = PrimitiveNode::make(
-      "decimal_col",
-      Repetition::kOptional,
-      LogicalType::decimal(7, 2),
-      Type::kInt32);
-  ColumnDescriptor descr(node, 1, 1);
+  {
+    const NodePtr node = PrimitiveNode::make(
+        "decimal_col",
+        Repetition::kOptional,
+        LogicalType::decimal(7, 2),
+        Type::kInt32);
+    ColumnDescriptor descr(node, 1, 1);
 
-  auto stats = makeStatistics<Int32Type>(&descr);
+    auto stats = makeStatistics<Int32Type>(&descr);
 
-  std::vector<int32_t> values = {19900, 20000};
-  stats->update(values.data(), values.size(), 1);
+    std::vector<int32_t> values = {19900, 20000};
+    stats->update(values.data(), values.size(), 1);
 
-  ASSERT_TRUE(stats->hasMinMax());
-  EXPECT_EQ(stats->min(), 19900);
-  EXPECT_EQ(stats->max(), 20000);
+    ASSERT_TRUE(stats->hasMinMax());
+    EXPECT_EQ(stats->min(), 19900);
+    EXPECT_EQ(stats->max(), 20000);
 
-  const auto maxValue = stats->MaxValue();
-  EXPECT_FALSE(maxValue.empty()) << "MaxValue() should not be empty";
+    const auto maxValue = stats->MaxValue();
+    EXPECT_FALSE(maxValue.empty()) << "MaxValue() should not be empty";
 
-  int32_t decodedMax = ::arrow::bit_util::FromBigEndian(
-      *reinterpret_cast<const int32_t*>(maxValue.data()));
-  EXPECT_EQ(decodedMax, 20000) << "MaxValue() should return 20000";
+    int32_t decodedMax = ::arrow::bit_util::FromBigEndian(
+        *reinterpret_cast<const int32_t*>(maxValue.data()));
+    EXPECT_EQ(decodedMax, 20000) << "MaxValue() should return 20000";
 
-  const auto minValue = stats->MinValue();
-  EXPECT_FALSE(minValue.empty()) << "MinValue() should not be empty";
+    const auto minValue = stats->MinValue();
+    EXPECT_FALSE(minValue.empty()) << "MinValue() should not be empty";
 
-  int32_t decodedMin = ::arrow::bit_util::FromBigEndian(
-      *reinterpret_cast<const int32_t*>(minValue.data()));
-  EXPECT_EQ(decodedMin, 19900) << "MinValue() should return 19900";
-    }
+    int32_t decodedMin = ::arrow::bit_util::FromBigEndian(
+        *reinterpret_cast<const int32_t*>(minValue.data()));
+    EXPECT_EQ(decodedMin, 19900) << "MinValue() should return 19900";
+  }
+  {
+    const NodePtr bigintNode = PrimitiveNode::make(
+        "bigint_col", Repetition::kOptional, Type::kInt64);
+    ColumnDescriptor bigintDescr(bigintNode, 1, 1);
+
+    auto bigintStats = makeStatistics<Int64Type>(&bigintDescr);
+
+    std::vector<int64_t> bigintValues = {19900, 20000};
+    bigintStats->update(bigintValues.data(), bigintValues.size(), 1);
+
+    ASSERT_TRUE(bigintStats->hasMinMax());
+    EXPECT_EQ(bigintStats->min(), 19900);
+    EXPECT_EQ(bigintStats->max(), 20000);
+
+    const auto bigintMaxValue = bigintStats->MaxValue();
+    EXPECT_FALSE(bigintMaxValue.empty()) << "MaxValue() should not be empty";
+    EXPECT_EQ(bigintMaxValue.size(), sizeof(int64_t));
+
+    int64_t decodedBigintMax = ::arrow::bit_util::FromLittleEndian(
+        *reinterpret_cast<const int64_t*>(bigintMaxValue.data()));
+    EXPECT_EQ(decodedBigintMax, 20000) << "MaxValue() should return 20000";
+
+    const auto bigintMinValue = bigintStats->MinValue();
+    EXPECT_FALSE(bigintMinValue.empty()) << "MinValue() should not be empty";
+    EXPECT_EQ(bigintMinValue.size(), sizeof(int64_t));
+
+    int64_t decodedBigintMin = ::arrow::bit_util::FromLittleEndian(
+        *reinterpret_cast<const int64_t*>(bigintMinValue.data()));
+    EXPECT_EQ(decodedBigintMin, 19900) << "MinValue() should return 19900";
+  }
+}
 
 TEST(StatisticsComparison, withInt64) {
   NodePtr Node =

@@ -569,6 +569,12 @@ std::string encodeDecimalToBigEndian(T value) {
   return std::string(reinterpret_cast<const char*>(buffer), sizeof(T));
 }
 
+inline std::string encodeInt64ToLittleEndian(int64_t value) {
+  uint8_t buffer[sizeof(int64_t)];
+  *reinterpret_cast<int64_t*>(buffer) = ::arrow::bit_util::ToLittleEndian(value);
+  return std::string(reinterpret_cast<const char*>(buffer), sizeof(int64_t));
+}
+
 template <typename DType>
 class TypedStatisticsImpl : public TypedStatistics<DType> {
  public:
@@ -820,6 +826,7 @@ class TypedStatisticsImpl : public TypedStatistics<DType> {
       if (descr_->logicalType()->isDecimal()) {
         return encodeDecimalToBigEndian(min_);
       }
+      return encodeInt64ToLittleEndian(min_);
     }
     if constexpr (std::is_same_v<T, int128_t>) {
       return encodeDecimalToBigEndian(min_);
@@ -851,6 +858,7 @@ class TypedStatisticsImpl : public TypedStatistics<DType> {
       if (descr_->logicalType()->isDecimal()) {
         return encodeDecimalToBigEndian(max_);
       }
+      return encodeInt64ToLittleEndian(max_);
     }
     if constexpr (std::is_same_v<T, int128_t>) {
       return encodeDecimalToBigEndian(max_);
